@@ -44,4 +44,4 @@ This automated intelligence agent analyzes local business listings to detect tho
 Designed for academic research and authorized lead generation workflows. Users are responsible for adhering to all relevant terms of service and usage guidelines.
 
 ---
-*Developed by [Your Name] - Senior Python Developer*
+*Developed by [Mikael Hepner]*
