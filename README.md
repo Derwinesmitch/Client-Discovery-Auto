@@ -2,46 +2,52 @@
 
 ## 🚀 Overview
 
-A sophisticated market research tool designed to identify local businesses with digital optimization opportunities. 
+A sophisticated market research tool designed to identify local businesses with digital optimization opportunities. NOW featuring a **User-Friendly GUI**!
 
-This automated intelligence agent analyzes local business listings to detect those lacking an active web presence. It goes beyond simple listing checks by performing a multi-stage verification process to ensure high-quality, actionable results for web development agencies and digital consultants.
+This automated intelligence agent analyzes local business listings to detect those lacking an active web presence. It is designed to be simple, effective, and professional.
+
+![ClientFinder Interface](https://via.placeholder.com/600x400?text=ClientFinder+GUI+Screenshot)
 
 ## ✨ Key Features
 
-*   **🔍 Smart Discovery Engine**: Systematically maps local service providers (e.g., "Dentists", "Legal Firms") in any target geography.
-*   **🛡️ Human-Like Interaction**: Leveraging `undetected-chromedriver` to navigate complex DOM structures while maintaining a low profile, simulating authentic user behavior.
-*   **🧠 Multi-Stage Verification**:
-    *   **Primary Filter**: Analyzes map listings for missing direct website links.
-    *   **Secondary Intelligence**: autonomously initiates a background audit using search engine queries to verify if a business truly lacks a website or if it's just unlinked, effectively filtering out 90% of false positives.
-*   **📊 Structured Data Output**: Automatically aggregates validated opportunities into a clean CSV format for CRM integration.
+*   **🖥️ Desktop GUI**: No more command line! Easy-to-use "Point & Click" interface.
+*   **🔍 Smart Discovery**: inputs for **Profession**, **City**, and **Neighborhoods**.
+*   **🛡️ Stealth Mode**: Uses `undetected-chromedriver` to simulate authentic human behavior.
+*   **📊 CSV Export**: Automatically saves all leads to `leads.csv`.
 
 ## 🛠️ Technology Stack
 
-*   **Python**: Core logic and orchestration.
-*   **Selenium**: Browser automation and DOM interaction.
-*   **Undetected-Chromedriver**: Advanced anti-bot detection evasion.
-*   **CSV Module**: Data serialization and persistence.
+*   **Python**: Core logic.
+*   **Tkinter**: Native GUI framework.
+*   **Selenium & Undetected-Chromedriver**: Browser automation.
 
-## ⚡ Quick Start
+## ⚡ Quick Start for New Users
 
-1.  **Clone the Repository**:
-    ```bash
-    git clone https://github.com/yourusername/client-finder-intelligence.git
-    ```
-
-2.  **Install Dependencies**:
+1.  **Install Python**: Make sure you have Python installed.
+2.  **Download the Project**: Clone this repo or download the ZIP.
+3.  **Install Dependencies**:
+    Open your terminal in the project folder and run:
     ```bash
     pip install -r requirements.txt
     ```
-
-3.  **Run the Analysis**:
+4.  **Run the App**:
     ```bash
     python google_maps_leads.py
     ```
+5.  **Use**:
+    *   **Profession**: Enter a niche (e.g. `Dentists`, `Pilates`, `Plumbers`).
+    *   **City**: Enter the main city (e.g. `Asuncion`).
+    *   **Neighborhoods**: Enter a comma-separated list of areas (e.g. `Villa Morra, Centro, Carmelitas`).
+    *   Click **Start Intelligence Agent** and watch the magic happen!
 
 ## ⚠️ Disclaimer
 
-Designed for academic research and authorized lead generation workflows. Users are responsible for adhering to all relevant terms of service and usage guidelines.
+**For Educational and Internal Business Research Uses Only.**
+
+This tool is designed to automate public data gathering.
+*   **Respect Terms of Service**: Automated scraping may violate Google Maps Terms of Service. Use responsibly.
+*   **Data Privacy**: Public business data (Name, Phone) is generally considered public domain, but always verify local regulations regarding data collection.
+*   **No Warranty**: The software is provided "as is". Use at your own risk.
 
 ---
-*Developed by [Your Name] - Senior Python Developer*
+*Developed by Mikael Hepner - Senior Python Developer*

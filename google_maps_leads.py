@@ -5,6 +5,9 @@ import csv
 import logging
 import os
 import sys
+import threading
+import tkinter as tk
+from tkinter import ttk, scrolledtext, messagebox
 
 # Try to import undetected_chromedriver
 try:
@@ -14,102 +17,95 @@ try:
     from selenium.webdriver.support import expected_conditions as EC
 except ImportError as e:
     print(f"Critical Error: Required libraries not found. Details: {e}")
-    print("Please run: pip install undetected-chromedriver selenium")
     sys.exit(1)
-except Exception as e:
-    print(f"An unexpected error occurred during import: {e}")
-    sys.exit(1)
+
+# --- PATCH FOR WINDOWS GHOST ERROR ---
+def safe_destructor(self):
+    try:
+        self.quit()
+    except OSError:
+        pass
+uc.Chrome.__del__ = safe_destructor
+# -------------------------------------
 
 # --- CONFIGURATION SECTION ---
-# Update these selectors if Google Maps structure changes.
-# Use 'Inspect Element' (F12) in your browser to verify these class names.
-
-### CSS SELECTORS ###
-# The container for the *list* of results in the sidebar. 
-# Usually has role="feed" or similar. We often find the individual items inside.
-# Google often uses these specific classes for result containers
 RESULT_ITEM_SELECTOR = 'div[role="article"]' 
-
-# The specific icon/text that indicates a website. 
-# Look for the 'globe' icon or the text 'Website' in the details panel.
-# E.g., a button with data-item-id="authority" or labeled "Website"
 WEBSITE_BUTTON_SELECTOR = 'a[data-item-id="authority"]'
-
-# Business Name in the details panel (side panel that opens after clicking)
 BUSINESS_NAME_SELECTOR = 'h1.DUwDvf' 
-
-# Phone number in the details panel. 
-# Often has a specific aria-label or starts with 'tel:' in href, but visually it's a button.
-# We will look for a button that contains the phone icon or starts with specific text.
-# A generic approach is safe: buttons with data-item-id starting with "phone"
 PHONE_BUTTON_SELECTOR = 'button[data-item-id^="phone"]'
-#######################
 
 MAX_LEADS_TO_CHECK = 50
 CSV_FILENAME = 'leads.csv'
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("scraper.log"),
-        logging.StreamHandler(sys.stdout)
-    ]
-)
+# Setup logging to be redirected to GUI later
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+class TextHandler(logging.Handler):
+    """This class allows getting log messages into the Tkinter Text widget."""
+    def __init__(self, text_widget):
+        logging.Handler.__init__(self)
+        self.text_widget = text_widget
+
+    def emit(self, record):
+        msg = self.format(record)
+        def append():
+            self.text_widget.configure(state='normal')
+            self.text_widget.insert(tk.END, msg + '\n')
+            self.text_widget.configure(state='disabled')
+            self.text_widget.yview(tk.END)
+        # Verify if widget exists (app might be closed)
+        try:
+            self.text_widget.after(0, append)
+        except:
+            pass
 
 class LeadFinder:
-    def __init__(self):
+    def __init__(self, log_widget=None):
         self.driver = None
         self.leads_found = 0
         self.checked_count = 0
         self.existing_leads = set()
         self.load_existing_leads()
+        self.stop_requested = False
+        self.log_widget = log_widget
 
     def load_existing_leads(self):
         """Load existing phone numbers/names from CSV to avoid duplicates."""
         if os.path.exists(CSV_FILENAME):
-            with open(CSV_FILENAME, 'r', encoding='utf-8') as f:
-                reader = csv.reader(f)
-                next(reader, None) # Skip header
-                for row in reader:
-                    if len(row) >= 2:
-                        # Store phone number as unique identifier (or name if phone is N/A)
-                        self.existing_leads.add(row[1] if row[1] != "N/A" else row[0])
-        logger.info(f"Loaded {len(self.existing_leads)} existing leads from CSV.")
+            try:
+                with open(CSV_FILENAME, 'r', encoding='utf-8') as f:
+                    reader = csv.reader(f)
+                    next(reader, None) # Skip header
+                    for row in reader:
+                        if len(row) >= 2:
+                            self.existing_leads.add(row[1] if row[1] != "N/A" else row[0])
+            except Exception as e:
+                logger.error(f"Error loading CSV: {e}")
 
     def init_browser(self):
         """Initialize undetected-chromedriver."""
         logger.info("Initializing browser...")
         options = uc.ChromeOptions()
-        # Randomize window size slightly to look more human
         options.add_argument(f"--window-size={random.randint(1000, 1400)},{random.randint(800, 1000)}")
-        
-        # NOTE: Headless mode often triggers Google's anti-bot easier. 
-        # Keeping it visible (headless=False) is recommended for undetected-chromedriver.
         self.driver = uc.Chrome(options=options)
         logger.info("Browser initialized.")
 
     def human_sleep(self, min_seconds=2, max_seconds=5):
-        """Random sleep to mimic human behavior."""
-        sleep_time = random.uniform(min_seconds, max_seconds)
-        time.sleep(sleep_time)
+        if self.stop_requested: return
+        time.sleep(random.uniform(min_seconds, max_seconds))
 
     def save_lead(self, name, phone, query):
-        """Save a valid lead to CSV immediately."""
-        
-        # Deduplication check
         unique_id = phone if phone != "N/A" else name
         if unique_id in self.existing_leads:
-            logger.info(f"Duplicate lead found (already in CSV): {name}. Skipping save.")
+            logger.info(f"Duplicate: {name}. Skipping.")
             return
 
         file_exists = os.path.isfile(CSV_FILENAME)
         with open(CSV_FILENAME, 'a', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             if not file_exists:
-                writer.writerow(['Business Name', 'Phone', 'Search Query', 'Timestamp']) # Header
+                writer.writerow(['Business Name', 'Phone', 'Search Query', 'Timestamp'])
             writer.writerow([name, phone, query, time.strftime("%Y-%m-%d %H:%M:%S")])
             
         self.existing_leads.add(unique_id)
@@ -117,284 +113,219 @@ class LeadFinder:
         self.leads_found += 1
 
     def scroll_sidebar(self):
-        """
-        Scrolls the results list sidebar to load more items.
-        Google Maps loads results dynamically. We need to find the scrollable container.
-        """
         try:
-            # We look for the feed container. This is a common aria-label for the list.
-            # If this fails, we might need to fallback to 'body' or different div logic
             scrollable_div = self.driver.find_element(By.CSS_SELECTOR, 'div[role="feed"]')
-            
-            # Scroll down using JS
             self.driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight", scrollable_div)
-            logger.info("Scrolled sidebar...")
-            self.human_sleep(2, 4) # Wait for load
-            
-            # Check if we reached the end warning (optional enhancement)
-            # msg_elements = self.driver.find_elements(By.CssSelector, "span.HlvSq") 
-        except Exception as e:
-            logger.warning(f"Could not scroll sidebar (might be initial load or end of list): {e}")
-
-    def check_external_website(self, name, query_location):
-        """
-        Opens a new tab to search Google for the business name.
-        Returns True if a likely official website is found.
-        """
-        logger.info(f"Double-checking: Is there a website for '{name}' on Google Search?")
-        original_window = self.driver.current_window_handle
-        
-        try:
-            # Open new tab
-            self.driver.execute_script("window.open('');")
-            self.human_sleep(0.5, 1) # Wait for tab to open
-            
-            check_handles = self.driver.window_handles
-            if len(check_handles) <= 1:
-                logger.warning("Could not open new tab for check. Skipping verification to be safe.")
-                return False
-
-            self.driver.switch_to.window(check_handles[-1])
-            
-            # Additional safety: Ensure we are NOT on the main maps window
-            if self.driver.current_window_handle == original_window:
-                logger.warning("Switched to wrong window. Aborting check.")
-                return False
-            
-            # Search Google
-            # We add the location from the user's original query to narrow it down
-            # e.g. "Clinica Zanon Asuncion"
-            # We strip generic terms like "Dentists in" from the query if possible, but appending the whole query is usually fine.
-            # Let's try to extract just the location from the query "Dentists in Asuncion" -> "Asuncion"
-            # distinct_location = query_location.split(" in ")[-1] if " in " in query_location else query_location
-            
-            search_q = f"{name} {query_location}"
-            self.driver.get(f"https://www.google.com/search?q={search_q}")
-            
             self.human_sleep(2, 4)
-            
-            # logic: Look at first 3 results. 
-            # If any of them are NOT common directories/social media, it's likely a website.
-            
-            ignored_domains = [
-                "facebook.com", "instagram.com", "linkedin.com", 
-                "yelp.com", "tripadvisor.com", "yellowpages.com", 
-                "mapquest.com", "tiktok.com", "twitter.com", 
-                "google.com", "waze.com", "foursquare.com"
-            ]
-            
-            # Common selector for search results stats/links
-            # This selector represents the main link in a search result
-            links = self.driver.find_elements(By.CSS_SELECTOR, "div.g a")
-            
-            found_likely_website = False
-            processed_count = 0
-            
-            for link in links:
-                if processed_count >= 3: break # Only check top 3
-                
-                href = link.get_attribute("href")
-                if not href: continue
-                
-                # Check if it's an ignored domain
-                is_ignored = any(d in href for d in ignored_domains)
-                
-                if not is_ignored:
-                    logger.info(f"Found likely website: {href}")
-                    found_likely_website = True
-                    break
-                
-                processed_count += 1
-                
-            return found_likely_website
-
-        except Exception as e:
-            logger.warning(f"Secondary check failed for {name}: {e}")
-            return False # Assume no website if check fails, to be safe/greedy
-        finally:
-            # Always close tab and return to maps
-            try:
-                # Only close if we are currently on a different window than the original
-                if len(self.driver.window_handles) > 1 and self.driver.current_window_handle != original_window:
-                    self.driver.close()
-                self.driver.switch_to.window(original_window)
-            except Exception as e:
-                logger.warning(f"Error switching back to main window: {e}")
+        except:
+            pass
 
     def extract_data(self, query):
-        """Iterate through loaded results and check for website."""
         logger.info("Starting extraction loop...")
-
-        # We need to re-find elements often because DOM updates detach them
         processed_indices = set()
 
-        while self.checked_count < MAX_LEADS_TO_CHECK:
-            # Find all current result items
+        while self.checked_count < MAX_LEADS_TO_CHECK and not self.stop_requested:
             results = self.driver.find_elements(By.CSS_SELECTOR, RESULT_ITEM_SELECTOR)
-            
-            # Filter out processed ones by index to avoid re-clicking same ones in this session
-            # Note: This is a simple logic. In a long scroll, checking by index is fragile if list updates at top.
-            # Better might be checking visible text, but index is okay for simple runs.
-            
             current_batch_count = len(results)
-            logger.info(f"Found {current_batch_count} results loaded so far.")
-
             found_new_in_batch = False
 
             for i in range(current_batch_count):
-                if self.checked_count >= MAX_LEADS_TO_CHECK:
-                    break
-                
-                if i in processed_indices:
-                    continue
+                if self.stop_requested: break
+                if self.checked_count >= MAX_LEADS_TO_CHECK: break
+                if i in processed_indices: continue
                 
                 found_new_in_batch = True
                 processed_indices.add(i)
                 self.checked_count += 1
 
-                # Re-fetch the list to avoid StaleElementReferenceException
                 results = self.driver.find_elements(By.CSS_SELECTOR, RESULT_ITEM_SELECTOR)
-                if i >= len(results):
-                    break # List might have shifted?
+                if i >= len(results): break 
                 
                 item = results[i]
-                
                 try:
-                    # Scroll item into view before clicking
                     self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", item)
                     self.human_sleep(1, 2)
                     item.click()
-                    
-                    # Wait for details panel to load
                     self.human_sleep(2, 4)
                     
-                    # Check for website button
+                    # Name check
+                    name = "Unknown"
+                    try:
+                        name = self.driver.find_element(By.CSS_SELECTOR, BUSINESS_NAME_SELECTOR).text.strip()
+                    except: pass
+                    
+                    if name == "Unknown" or not name: continue
+
+                    # Check Website
                     has_website = False
                     try:
-                        # Short timeout to check for website button
-                        WebDriverWait(self.driver, 3).until(
+                        WebDriverWait(self.driver, 2).until(
                             EC.presence_of_element_located((By.CSS_SELECTOR, WEBSITE_BUTTON_SELECTOR))
                         )
                         has_website = True
-                    except:
-                        has_website = False
-
-                    # Get Name
-                    name = "Unknown"
-                    try:
-                        name_el = self.driver.find_element(By.CSS_SELECTOR, BUSINESS_NAME_SELECTOR)
-                        name = name_el.text.strip()
-                    except:
-                        pass # Keep Unknown
+                    except: has_website = False
 
                     if not has_website:
-                        logger.info(f"Checking {name}: No Website on Maps...")
-                        
-                        # --- SECONDARY VERIFICATION ---
-                        # Check normal Google Search to see if they actually DO have a website
-                        # We use the 'query' variable which contains the location (e.g. "Dentists in Asuncion")
-                        # to give context to the search check.
-                        
-                        has_hidden_website = self.check_external_website(name, query)
-                        
-                        if has_hidden_website:
-                            logger.info(f"Skipping {name}: Found likely website on Google Search.")
-                        else:
-                            logger.info(f"{name} is a VALID LEAD (No site on Maps, No obvious site on Google).")
-                            
-                            # Get Phone
-                            phone = "N/A"
-                            try:
-                                # Try to find the button containing the phone number
-                                phone_btn = self.driver.find_element(By.CSS_SELECTOR, PHONE_BUTTON_SELECTOR)
-                                # The phone number is usually in the aria-label or specific child div
-                                # Validating via aria-label is often robust
-                                phone = phone_btn.get_attribute("aria-label") or phone_btn.text
-                                phone = phone.replace("Phone: ", "") # Clean up commonly found text
-                            except:
-                                pass # Phone not listed
-
-                            self.save_lead(name, phone, query)
+                        logger.info(f"{name} is a VALID LEAD (No website).")
+                        # Get Phone
+                        phone = "N/A"
+                        try:
+                            phone_btn = self.driver.find_element(By.CSS_SELECTOR, PHONE_BUTTON_SELECTOR)
+                            phone = phone_btn.get_attribute("aria-label") or phone_btn.text
+                            phone = phone.replace("Phone: ", "")
+                        except: pass 
+                        self.save_lead(name, phone, query)
                     else:
-                        logger.info(f"Checking {name}: Has website. Skipping.")
+                        logger.info(f"Skipping {name} (Has website).")
 
                 except Exception as e:
-                    logger.error(f"Error processing item index {i}: {e}")
+                    logger.error(f"Error on item {i}: {e}")
                     continue
                 
-                # Small pause between items
                 self.human_sleep(1, 3)
 
-            # If we didn't find any new items in this pass, we need to scroll more
-            if not found_new_in_batch or (len(processed_indices) >= current_batch_count):
+            if not found_new_in_batch:
                 self.scroll_sidebar()
-                # If scroll didn't add new items, we might be stuck or at end.
+                self.human_sleep(2, 3)
                 new_results = self.driver.find_elements(By.CSS_SELECTOR, RESULT_ITEM_SELECTOR)
                 if len(new_results) == current_batch_count:
-                    logger.info("No new results after scrolling. Trying one more time...")
-                    self.human_sleep(3, 5)
-                    self.scroll_sidebar()
-                    new_results_2 = self.driver.find_elements(By.CSS_SELECTOR, RESULT_ITEM_SELECTOR)
-                    if len(new_results_2) == current_batch_count:
-                        logger.info("Reached end of results or scroll stuck. Finishing.")
-                        break
+                    break
 
-    def run(self):
-        print("--- Google Maps Lead Finder ---")
-        print("This tool can scan multiple locations for a specific niche.")
-        
-        niche = input("Enter Niche (e.g., 'Dentists', 'Restaurants'): ").strip()
-        locations_input = input("Enter Locations (comma separated, e.g., 'Downtown, Uptown, Asuncion'): ").strip()
-        
-        if not niche or not locations_input:
-            print("Inputs cannot be empty. Exiting.")
-            return
-
-        locations = [loc.strip() for loc in locations_input.split(',')]
-        
+    def run_search(self, niche, city, neighborhoods):
+        self.stop_requested = False
         self.init_browser()
         
-        total_locations = len(locations)
+        locations = [n.strip() for n in neighborhoods.split(',')]
+        if not locations or locations == ['']:
+            locations = [city] # Fallback if no neighborhoods
+        else:
+            # Append city to neighborhoods for valid search
+            locations = [f"{loc} {city}" for loc in locations]
+
+        total_tasks = len(locations)
         
         try:
             for index, location in enumerate(locations):
+                if self.stop_requested: break
+                
                 query = f"{niche} in {location}"
-                logger.info(f"--- Starting Search {index + 1}/{total_locations}: {query} ---")
+                logger.info(f"--- Search {index + 1}/{total_tasks}: {query} ---")
                 
-                # OPTIMIZATION: Navigate directly to the search URL. 
-                # This is more robust than finding the search box and typing.
                 search_url = f"https://www.google.com/maps/search/{query}"
-                logger.info(f"Navigating directly to: {search_url}")
                 self.driver.get(search_url)
-
-                # Wait for results to appear
-                logger.info("Waiting for results to load...")
-                
-                # Sometimes a cookie consent might block interaction or loading
-                # We add a long wait and a manual sleep to be safe
-                self.human_sleep(5, 7) 
+                self.human_sleep(5, 7)
 
                 try:
-                    wait = WebDriverWait(self.driver, 30)
-                    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, RESULT_ITEM_SELECTOR)))
-                    
+                    WebDriverWait(self.driver, 10).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, RESULT_ITEM_SELECTOR))
+                    )
                     self.extract_data(query)
-                except Exception as e:
-                    logger.warning(f"Could not load results for {location}: {e}")
+                except:
+                    logger.info(f"No results for: {query}. Skipping.")
 
-                # Anti-Ban Pause between locations
-                if index < total_locations - 1:
-                    pause_time = random.randint(15, 25)
-                    logger.info(f"Taking a safety break of {pause_time} seconds before next location...")
-                    time.sleep(pause_time)
-            
+                if index < total_tasks - 1 and not self.stop_requested:
+                    logger.info("cooling down (15s)...")
+                    for _ in range(15):
+                        if self.stop_requested: break
+                        time.sleep(1)
+        
         except Exception as e:
-            logger.error(f"An unexpected error occurred: {e}")
+            logger.error(f"Error: {e}")
         finally:
-            logger.info(f"Done. Checked {self.checked_count} businesses. Found {self.leads_found} leads.")
+            logger.info("Finished.")
             if self.driver:
-                self.driver.quit()
+                try: self.driver.quit()
+                except: pass
+
+class ClientFinderApp(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("ClientFinder Intelligence Tool")
+        self.geometry("600x650")
+        
+        # Styles
+        style = ttk.Style()
+        style.theme_use('clam')
+        
+        # Main Frame
+        main_frame = ttk.Frame(self, padding="20")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Title
+        ttk.Label(main_frame, text="ClientFinder Pro", font=("Helvetica", 16, "bold")).pack(pady=10)
+
+        # Inputs
+        input_frame = ttk.LabelFrame(main_frame, text="Search Configuration", padding="10")
+        input_frame.pack(fill=tk.X, pady=5)
+
+        ttk.Label(input_frame, text="Profession / Niche (e.g. Dentists):").pack(anchor=tk.W)
+        self.niche_entry = ttk.Entry(input_frame)
+        self.niche_entry.pack(fill=tk.X, pady=5)
+
+        ttk.Label(input_frame, text="City (e.g. Asuncion):").pack(anchor=tk.W)
+        self.city_entry = ttk.Entry(input_frame)
+        self.city_entry.pack(fill=tk.X, pady=5)
+
+        ttk.Label(input_frame, text="Neighborhoods (comma separated):").pack(anchor=tk.W)
+        self.hood_text = scrolledtext.ScrolledText(input_frame, height=4, font=("Consolas", 9))
+        self.hood_text.pack(fill=tk.X, pady=5)
+        self.hood_text.insert(tk.END, "Villa Morra, Carmelitas, Centro") # Default
+
+        # Buttons
+        btn_frame = ttk.Frame(main_frame)
+        btn_frame.pack(fill=tk.X, pady=10)
+        
+        self.start_btn = ttk.Button(btn_frame, text="Start Intelligence Agent", command=self.start_thread)
+        self.start_btn.pack(side=tk.LEFT, padx=5, expand=True, fill=tk.X)
+        
+        self.stop_btn = ttk.Button(btn_frame, text="Stop", command=self.stop_scraper, state=tk.DISABLED)
+        self.stop_btn.pack(side=tk.RIGHT, padx=5)
+
+        # Log Window
+        ttk.Label(main_frame, text="Live Intelligence Log:").pack(anchor=tk.W)
+        self.log_area = scrolledtext.ScrolledText(main_frame, height=15, state='disabled', font=("Consolas", 8))
+        self.log_area.pack(fill=tk.BOTH, expand=True)
+
+        # Setup Logging
+        text_handler = TextHandler(self.log_area)
+        text_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s', datefmt='%H:%M:%S'))
+        logger.addHandler(text_handler)
+        
+        self.finder = None
+
+    def start_thread(self):
+        niche = self.niche_entry.get().strip()
+        city = self.city_entry.get().strip()
+        hoods = self.hood_text.get("1.0", tk.END).strip()
+        
+        if not niche or not city:
+            messagebox.showwarning("Input Error", "Please enter valid Niche and City.")
+            return
+
+        self.start_btn.config(state=tk.DISABLED)
+        self.stop_btn.config(state=tk.NORMAL)
+        
+        self.finder = LeadFinder()
+        
+        # Run in separate thread to not freeze GUI
+        t = threading.Thread(target=self.run_logic, args=(niche, city, hoods))
+        t.daemon = True
+        t.start()
+
+    def run_logic(self, niche, city, hoods):
+        try:
+            self.finder.run_search(niche, city, hoods)
+        except Exception as e:
+            logger.error(f"Critical Error: {e}")
+        finally:
+            self.stop_btn.config(state=tk.DISABLED)
+            self.start_btn.config(state=tk.NORMAL)
+
+    def stop_scraper(self):
+        if self.finder:
+            logger.info("Stopping agent... (finishing current action)")
+            self.finder.stop_requested = True
 
 if __name__ == "__main__":
-    finder = LeadFinder()
-    finder.run()
+    app = ClientFinderApp()
+    app.mainloop()
