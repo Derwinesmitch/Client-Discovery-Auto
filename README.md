@@ -50,4 +50,4 @@ This tool is designed to automate public data gathering.
 *   **No Warranty**: The software is provided "as is". Use at your own risk.
 
 ---
-*Developed by Mikael Hepner - Senior Python Developer*
+*Developed by Mikael Hepner*
